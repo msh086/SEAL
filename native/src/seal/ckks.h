@@ -11,6 +11,8 @@
 #include "seal/util/dwthandler.h"
 #include "seal/util/uintarithsmallmod.h"
 #include "seal/util/uintcore.h"
+#include "seal/randomtostd.h"
+#include "seal/util/clipnormal.h"
 #include <cmath>
 #include <complex>
 #include <limits>
@@ -438,6 +440,36 @@ namespace seal
         SEAL_NODISCARD inline std::size_t slot_count() const noexcept
         {
             return slots_;
+        }
+
+
+        /**
+         * Sample a gaussian noise, then perform canonical embedding
+         * this is faster than sampling a gaussian noise followed by decode, since the conversion chain
+         * crt->ntt->crt->multi-precision->double is omitted
+         * */
+        inline void fast_noise_decode(parms_id_type parms_id, std::vector<std::complex<double>>& dst, double std_dev,
+                                      double max_dev){
+            auto &context_data = *context_.get_context_data(parms_id);
+            auto &parms = context_data.parms();
+            std::size_t coeff_count = parms.poly_modulus_degree();
+            auto prng = parms.random_generator()->create();
+            auto pool = MemoryManager::GetPool();
+
+            dst.resize(slots_);
+            RandomToStandardAdapter engine(prng);
+            util::ClippedNormalDistribution dist(0, std_dev, max_dev);
+            auto res(util::allocate<std::complex<double>>(coeff_count, pool));
+            for(size_t i = 0; i < coeff_count; i++)
+                res[i] = static_cast<int64_t>(dist(engine));
+
+            int logn = util::get_power_of_two(coeff_count);
+            fft_handler_.transform_to_rev(res.get(), logn, root_powers_.get());
+
+            for (std::size_t i = 0; i < slots_; i++)
+            {
+                dst[i] = res[static_cast<std::size_t>(matrix_reps_index_map_[i])];
+            }
         }
 
     private:
